@@ -40,7 +40,7 @@
     <div class="legend">
       <div class="item"><span class="swatch contract"></span> Contract</div>
       <div class="item"><span class="swatch traffic"></span> Traffic</div>
-      <div class="item"><span class="swatch actual"></span> Actual (traffic ∩ contract)</div>
+      <div class="item"><span class="swatch actual"></span> Production / newSplit (actual = traffic x contract)</div>
     </div>
 
     <div class="fields">
@@ -187,7 +187,8 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   const innerW = W - padLeft - padRight;
   function xFor(dateStr){ return padLeft + ( (parseDate(dateStr) - viewStart) / totalMs ) * innerW; }
 
-  const rows = [ 'Contract', 'Traffic', 'Actual' ];
+  const actualLabel = guideType === 'quarter' ? 'newSplit' : 'Production';
+  const rows = [ 'Contract', 'Traffic', actualLabel ];
   const rowHeight = 42;
   const startY = 50;
 
@@ -296,7 +297,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     rect.setAttribute('rx', 6);
     rect.setAttribute('class','bar');
     rect.setAttribute('fill','#2ecc71');
-    rect.addEventListener('mousemove', (ev)=> showTip(ev,'Actual', p));
+    rect.addEventListener('mousemove', (ev)=> showTip(ev, actualLabel, p));
     rect.addEventListener('mouseleave', hideTip);
     svg.appendChild(rect);
 
