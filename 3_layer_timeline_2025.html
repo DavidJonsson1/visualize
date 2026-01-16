@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3-layer Timespan Timeline — Embedded CSV (file:// friendly)</title>
+  <style>
+    :root{font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{margin:18px;background:#f7fafc;color:#0f172a}
+    .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 6px 20px rgba(2,6,23,0.06);max-width:1100px;margin:0 auto}
+    h1{font-size:18px;margin:0 0 10px}
+    .legend{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+    .legend .item{display:flex;gap:8px;align-items:center;font-size:13px}
+    .swatch{width:18px;height:12px;border-radius:3px}
+    .contract{background:#e6eef8}
+    .traffic{background:#7aa2ff}
+    .actual{background:#2ecc71}
+    .svg-wrap{overflow:auto;border-radius:8px}
+    svg{display:block}
+    .axis text{font-size:12px;fill:#334155}
+    .row-label{font-size:13px;fill:#0f172a}
+    .bar{rx:4;cursor:pointer}
+    .tooltip{position:fixed;padding:8px 10px;background:#0b1220;color:#fff;border-radius:6px;font-size:13px;pointer-events:none;z-index:999;display:none}
+    .controls{display:flex;gap:8px;margin-top:12px;align-items:center}
+    button{background:#0f172a;color:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer}
+    .muted{color:#64748b;font-size:13px}
+    .fields{display:flex;gap:12px;margin-top:12px}
+    textarea{width:100%;min-height:92px;font-family:monospace;padding:8px;border-radius:8px;border:1px solid #cbd5e1}
+    .col{flex:1}
+    .small{font-size:12px;color:#475569}
+    .row{display:flex;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>3‑layer timeline — Embedded CSV (file:// friendly)</h1>
+    <p class="muted">This single HTML file contains the <code>contract</code> and <code>trafic</code> CSV data embedded as editable text blocks (CSV strings). No server required — open the file with <code>file://</code> in any browser and click <strong>Apply CSV</strong> to redraw.</p>
+
+    <div class="legend">
+      <div class="item"><span class="swatch contract"></span> Contract</div>
+      <div class="item"><span class="swatch traffic"></span> Traffic</div>
+      <div class="item"><span class="swatch actual"></span> Actual (traffic ∩ contract)</div>
+    </div>
+
+    <div class="fields">
+      <div class="col">
+        <label class="small"><strong>contract.csv</strong> (editable)</label>
+        <textarea id="contractCsv"></textarea>
+      </div>
+      <div class="col">
+        <label class="small"><strong>trafic.csv</strong> (editable)</label>
+        <textarea id="trafficCsv"></textarea>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:8px;">
+      <button id="applyBtn">Apply CSV</button>
+      <button id="resetBtn">Reset to example</button>
+      <button id="exportCsv">Export merged CSV</button>
+      <div style="flex:1"></div>
+      <div class="small">Detected year: <strong id="yearLabel">—</strong></div>
+    </div>
+
+    <div class="svg-wrap" style="margin-top:12px;padding:8px;">
+      <svg id="timeline" width="1000" height="260" aria-label="timeline"></svg>
+    </div>
+
+    <div id="status" class="small" style="margin-top:8px;color:#334155"></div>
+  </div>
+
+  <div id="tooltip" class="tooltip"></div>
+
+<script>
+// Embedded CSV examples (editable strings). Modify these directly then click Apply CSV.
+const exampleContract = `start,end
+2025-01-01,2025-10-31`;
+const exampleTraffic = `start,end
+2025-01-23,2025-04-28
+2025-08-01,2025-10-07`;
+
+// --- Minimal CSV parsing utilities (file:// friendly — no fetch) ---
+function parseCSV(text){
+  if(!text) return [];
+  const lines = text.trim().split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  if(!lines.length) return [];
+  const header = lines[0].split(',').map(h=>h.trim().toLowerCase());
+  const si = header.indexOf('start');
+  const ei = header.indexOf('end');
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const cols = lines[i].split(',').map(c=>c.trim());
+    if(si===-1 || ei===-1){ rows.push({start: cols[0], end: cols[1]}); }
+    else { rows.push({start: cols[si], end: cols[ei]}); }
+  }
+  return rows.filter(r=>r.start && r.end);
+}
+function parseDate(s){ return new Date(s + 'T00:00:00'); }
+function fmtDate(d){ return d.toISOString().slice(0,10); }
+function daysBetween(a,b){ return Math.round((b - a) / (1000*60*60*24)); }
+
+function intersectIntervals(a,b){
+  const s = new Date(Math.max(parseDate(a.start), parseDate(b.start)));
+  const e = new Date(Math.min(parseDate(a.end), parseDate(b.end)));
+  if(s <= e) return { start: fmtDate(s), end: fmtDate(e) };
+  return null;
+}
+function computeActual(contractList, trafficList){
+  const result = [];
+  for(const t of trafficList){
+    for(const c of contractList){
+      const inter = intersectIntervals(c, t);
+      if(inter) result.push(inter);
+    }
+  }
+  result.sort((x,y)=> x.start.localeCompare(y.start));
+  const merged = [];
+  for(const it of result){
+    if(!merged.length){ merged.push({...it}); continue; }
+    const last = merged[merged.length-1];
+    if(parseDate(it.start) <= new Date(parseDate(last.end).getTime() + 24*60*60*1000)){
+      if(parseDate(it.end) > parseDate(last.end)) last.end = it.end;
+    } else merged.push({...it});
+  }
+  return merged;
+}
+
+// --- Drawing ---
+function drawTimeline({year, contractPeriods, trafficPeriods}){
+  const svg = document.getElementById('timeline');
+  const W = Math.max(900, svg.clientWidth || 1000);
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', 260);
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+
+  const viewStart = new Date(year + '-01-01T00:00:00');
+  const viewEnd   = new Date(year + '-12-31T23:59:59');
+  const totalMs = viewEnd - viewStart;
+
+  const padLeft = 120;
+  const padRight = 40;
+  const innerW = W - padLeft - padRight;
+  function xFor(dateStr){ return padLeft + ( (parseDate(dateStr) - viewStart) / totalMs ) * innerW; }
+
+  const rows = [ 'Contract', 'Traffic', 'Actual' ];
+  const rowHeight = 42;
+  const startY = 50;
+
+  // Month grid + labels
+  for(let m=0;m<12;m++){
+    const md = new Date(year, m, 1);
+    const x = padLeft + ((md - viewStart)/totalMs) * innerW;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', x);
+    line.setAttribute('x2', x);
+    line.setAttribute('y1', startY - 12);
+    line.setAttribute('y2', startY + rows.length*rowHeight + 8);
+    line.setAttribute('stroke', '#eef2ff');
+    line.setAttribute('stroke-width', 1);
+    svg.appendChild(line);
+
+    const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+    txt.setAttribute('x', x + 6);
+    txt.setAttribute('y', startY - 22);
+    txt.setAttribute('class', 'axis');
+    txt.textContent = md.toLocaleString(undefined,{month:'short'});
+    svg.appendChild(txt);
+  }
+
+  // Row labels + backgrounds
+  rows.forEach((r,i)=>{
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x', 12);
+    t.setAttribute('y', startY + i*rowHeight + 26);
+    t.setAttribute('class','row-label');
+    t.textContent = r;
+    svg.appendChild(t);
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', padLeft);
+    rect.setAttribute('y', startY + i*rowHeight + 6);
+    rect.setAttribute('width', innerW);
+    rect.setAttribute('height', rowHeight - 12);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('fill', '#fff');
+    svg.appendChild(rect);
+  });
+
+  // Draw contract bars
+  contractPeriods.forEach((p)=>{
+    if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
+    const x = Math.max(padLeft, xFor(p.start));
+    const x2 = Math.min(padLeft+innerW, xFor(p.end));
+    const w = Math.max(2, x2-x);
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', x);
+    rect.setAttribute('y', startY + 0*rowHeight + 12);
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', rowHeight - 24);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('class','bar');
+    rect.setAttribute('fill','#e6eef8');
+    rect.addEventListener('mousemove', (ev)=> showTip(ev, 'Contract', p));
+    rect.addEventListener('mouseleave', hideTip);
+    svg.appendChild(rect);
+  });
+
+  // Draw traffic bars
+  trafficPeriods.forEach((p)=>{
+    if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
+    const x = Math.max(padLeft, xFor(p.start));
+    const x2 = Math.min(padLeft+innerW, xFor(p.end));
+    const w = Math.max(2, x2-x);
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', x);
+    rect.setAttribute('y', startY + 1*rowHeight + 12);
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', rowHeight - 24);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('class','bar');
+    rect.setAttribute('fill','#7aa2ff');
+    rect.addEventListener('mousemove', (ev)=> showTip(ev,'Traffic', p));
+    rect.addEventListener('mouseleave', hideTip);
+    svg.appendChild(rect);
+  });
+
+  // Actual = intersection
+  const actual = computeActual(contractPeriods, trafficPeriods);
+  actual.forEach((p)=>{
+    if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
+    const x = Math.max(padLeft, xFor(p.start));
+    const x2 = Math.min(padLeft+innerW, xFor(p.end));
+    const w = Math.max(2, x2-x);
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', x);
+    rect.setAttribute('y', startY + 2*rowHeight + 12);
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', rowHeight - 24);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('class','bar');
+    rect.setAttribute('fill','#2ecc71');
+    rect.addEventListener('mousemove', (ev)=> showTip(ev,'Actual', p));
+    rect.addEventListener('mouseleave', hideTip);
+    svg.appendChild(rect);
+  });
+
+  // Bottom axis line
+  const axisLine = document.createElementNS('http://www.w3.org/2000/svg','line');
+  axisLine.setAttribute('x1', padLeft);
+  axisLine.setAttribute('x2', padLeft + innerW);
+  axisLine.setAttribute('y1', startY + rows.length*rowHeight + 8);
+  axisLine.setAttribute('y2', startY + rows.length*rowHeight + 8);
+  axisLine.setAttribute('stroke', '#e2e8f0');
+  svg.appendChild(axisLine);
+
+  document.getElementById('yearLabel').textContent = String(year);
+}
+
+// Tooltip
+const tip = document.getElementById('tooltip');
+function showTip(ev, layer, period){
+  tip.style.display = 'block';
+  tip.innerHTML = `<strong>${layer}</strong><br>${period.start} → ${period.end}<br>${daysBetween(parseDate(period.start), parseDate(period.end)) + 1} days`;
+  const pad = 12;
+  let left = ev.clientX + pad;
+  let top = ev.clientY + pad;
+  const rect = tip.getBoundingClientRect();
+  if(left + rect.width > window.innerWidth) left = ev.clientX - rect.width - pad;
+  tip.style.left = left + 'px';
+  tip.style.top = top + 'px';
+}
+function hideTip(){ tip.style.display = 'none'; }
+
+// --- UI wiring ---
+const contractTa = document.getElementById('contractCsv');
+const trafficTa = document.getElementById('trafficCsv');
+const statusEl = document.getElementById('status');
+
+function applyCsv(){
+  const contract = parseCSV(contractTa.value);
+  const traffic = parseCSV(trafficTa.value);
+  if(!contract.length && !traffic.length){ statusEl.textContent = 'No valid rows in contract or trafic CSV.'; return; }
+  statusEl.textContent = `Loaded contract: ${contract.length} row(s), traffic: ${traffic.length} row(s)`;
+  const allStarts = [...contract, ...traffic].map(r=> parseDate(r.start)).filter(d=>!isNaN(d));
+  const year = allStarts.length ? allStarts.reduce((a,b)=>a<b?a:b).getFullYear() : new Date().getFullYear();
+  // make contract/traffic available to draw function
+  window.contractPeriods = contract;
+  window.trafficPeriods = traffic;
+  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic});
+}
+
+function resetExample(){ contractTa.value = exampleContract; trafficTa.value = exampleTraffic; applyCsv(); }
+
+// Export merged CSV (Contract/Traffic/Actual)
+function exportMerged(){
+  const contract = window.contractPeriods || parseCSV(contractTa.value);
+  const traffic = window.trafficPeriods || parseCSV(trafficTa.value);
+  const actual = computeActual(contract, traffic);
+  const rows = [];
+  contract.forEach(r=> rows.push(['Contract', r.start, r.end, daysBetween(parseDate(r.start), parseDate(r.end))+1]));
+  traffic.forEach(r=> rows.push(['Traffic', r.start, r.end, daysBetween(parseDate(r.start), parseDate(r.end))+1]));
+  actual.forEach(r=> rows.push(['Actual', r.start, r.end, daysBetween(parseDate(r.start), parseDate(r.end))+1]));
+  const csv = ['layer,start,end,duration_days', ...rows.map(r=> r.join(','))].join('\n');
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'timeline-embedded.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+// attach
+document.getElementById('applyBtn').addEventListener('click', applyCsv);
+document.getElementById('resetBtn').addEventListener('click', resetExample);
+document.getElementById('exportCsv').addEventListener('click', exportMerged);
+
+// initialize with example data
+resetExample();
+
+</script>
+</body>
+</html>
