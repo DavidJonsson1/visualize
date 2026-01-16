@@ -20,6 +20,7 @@
     .axis text{font-size:12px;fill:#334155}
     .row-label{font-size:13px;fill:#0f172a}
     .bar{rx:4;cursor:pointer}
+    .bar-label{font-size:11px;fill:#fff;font-weight:600;pointer-events:none}
     .tooltip{position:fixed;padding:8px 10px;background:#0b1220;color:#fff;border-radius:6px;font-size:13px;pointer-events:none;z-index:999;display:none}
     .controls{display:flex;gap:8px;margin-top:12px;align-items:center}
     button{background:#0f172a;color:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer}
@@ -65,6 +66,11 @@
       <svg id="timeline" width="1000" height="260" aria-label="timeline"></svg>
     </div>
 
+    <div class="svg-wrap" style="margin-top:12px;padding:8px;">
+      <div class="small" style="margin-bottom:6px;">Quarter view (Q1–Q4)</div>
+      <svg id="timelineQuarter" width="1000" height="260" aria-label="timeline-quarters"></svg>
+    </div>
+
     <div id="status" class="small" style="margin-top:8px;color:#334155"></div>
   </div>
 
@@ -73,10 +79,11 @@
 <script>
 // Embedded CSV examples (editable strings). Modify these directly then click Apply CSV.
 const exampleContract = `start,end
-2025-01-01,2025-10-31`;
+2025-01-01,2025-12-31`;
 const exampleTraffic = `start,end
 2025-01-23,2025-04-28
-2025-08-01,2025-10-07`;
+2025-08-01,2025-10-07
+2025-11-14,2025-12-23`;
 
 // --- Minimal CSV parsing utilities (file:// friendly — no fetch) ---
 function parseCSV(text){
@@ -94,9 +101,10 @@ function parseCSV(text){
   }
   return rows.filter(r=>r.start && r.end);
 }
+const DAY_MS = 24*60*60*1000;
 function parseDate(s){ return new Date(s + 'T00:00:00'); }
 function fmtDate(d){ return d.toISOString().slice(0,10); }
-function daysBetween(a,b){ return Math.round((b - a) / (1000*60*60*24)); }
+function daysBetween(a,b){ return Math.round((b - a) / DAY_MS); }
 
 function intersectIntervals(a,b){
   const s = new Date(Math.max(parseDate(a.start), parseDate(b.start)));
@@ -125,8 +133,8 @@ function computeActual(contractList, trafficList){
 }
 
 // --- Drawing ---
-function drawTimeline({year, contractPeriods, trafficPeriods}){
-  const svg = document.getElementById('timeline');
+function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'tertial', svgId = 'timeline'}){
+  const svg = document.getElementById(svgId);
   const W = Math.max(900, svg.clientWidth || 1000);
   svg.setAttribute('width', W);
   svg.setAttribute('height', 260);
@@ -221,6 +229,18 @@ function drawTimeline({year, contractPeriods, trafficPeriods}){
     rect.addEventListener('mousemove', (ev)=> showTip(ev,'Traffic', p));
     rect.addEventListener('mouseleave', hideTip);
     svg.appendChild(rect);
+
+    // Add duration label if space allows
+    const duration = daysBetween(parseDate(p.start), parseDate(p.end)) + 1;
+    if (w >= 24) {
+      const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+      label.setAttribute('x', x + w/2);
+      label.setAttribute('y', startY + 1*rowHeight + rowHeight/2 + 3);
+      label.setAttribute('class', 'bar-label');
+      label.setAttribute('text-anchor', 'middle');
+      label.textContent = duration;
+      svg.appendChild(label);
+    }
   });
 
   // Actual = intersection
@@ -241,6 +261,18 @@ function drawTimeline({year, contractPeriods, trafficPeriods}){
     rect.addEventListener('mousemove', (ev)=> showTip(ev,'Actual', p));
     rect.addEventListener('mouseleave', hideTip);
     svg.appendChild(rect);
+
+    // Add duration label if space allows
+    const duration = daysBetween(parseDate(p.start), parseDate(p.end)) + 1;
+    if (w >= 24) {
+      const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+      label.setAttribute('x', x + w/2);
+      label.setAttribute('y', startY + 2*rowHeight + rowHeight/2 + 3);
+      label.setAttribute('class', 'bar-label');
+      label.setAttribute('text-anchor', 'middle');
+      label.textContent = duration;
+      svg.appendChild(label);
+    }
   });
 
   // Bottom axis line
@@ -252,7 +284,31 @@ function drawTimeline({year, contractPeriods, trafficPeriods}){
   axisLine.setAttribute('stroke', '#e2e8f0');
   svg.appendChild(axisLine);
 
-  document.getElementById('yearLabel').textContent = String(year);
+  // Guides (Tertial or Quarter) on top of other elements
+  const guideCount = guideType === 'quarter' ? 4 : 3;
+  const monthsPer = guideType === 'quarter' ? 3 : 4;
+  const labelPrefix = guideType === 'quarter' ? 'Q' : 'T';
+
+  for(let g=0; g<guideCount; g++){
+    const gDate = new Date(year, g*monthsPer, 1);
+    const x = padLeft + ((gDate - viewStart)/totalMs) * innerW;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', x);
+    line.setAttribute('x2', x);
+    line.setAttribute('y1', startY - 31); // move upward by 5px
+    line.setAttribute('y2', startY + rows.length*rowHeight + 8);
+    line.setAttribute('stroke', '#e11d48'); // red
+    line.setAttribute('stroke-width', 1.5);
+    line.setAttribute('stroke-dasharray', '4 4');
+    svg.appendChild(line);
+
+    const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+    txt.setAttribute('x', x + 6);
+    txt.setAttribute('y', startY - 35); // move upward by 5px
+    txt.setAttribute('class', 'axis');
+    txt.textContent = `${labelPrefix}${g+1}`;
+    svg.appendChild(txt);
+  }
 }
 
 // Tooltip
@@ -282,10 +338,12 @@ function applyCsv(){
   statusEl.textContent = `Loaded contract: ${contract.length} row(s), traffic: ${traffic.length} row(s)`;
   const allStarts = [...contract, ...traffic].map(r=> parseDate(r.start)).filter(d=>!isNaN(d));
   const year = allStarts.length ? allStarts.reduce((a,b)=>a<b?a:b).getFullYear() : new Date().getFullYear();
+  document.getElementById('yearLabel').textContent = String(year);
   // make contract/traffic available to draw function
   window.contractPeriods = contract;
   window.trafficPeriods = traffic;
-  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic});
+  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic, guideType: 'tertial', svgId: 'timeline'});
+  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic, guideType: 'quarter', svgId: 'timelineQuarter'});
 }
 
 function resetExample(){ contractTa.value = exampleContract; trafficTa.value = exampleTraffic; applyCsv(); }
