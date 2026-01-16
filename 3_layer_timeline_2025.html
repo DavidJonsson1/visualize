@@ -79,11 +79,11 @@
 <script>
 // Embedded CSV examples (editable strings). Modify these directly then click Apply CSV.
 const exampleContract = `start,end
-2025-01-01,2025-12-31`;
+2025-03-01,2025-12-31`;
 const exampleTraffic = `start,end
 2025-01-23,2025-04-28
-2025-08-01,2025-10-07
-2025-11-14,2025-12-23`;
+2025-08-01,2025-10-24
+2025-11-14,2025-12-15`;
 
 // --- Minimal CSV parsing utilities (file:// friendly — no fetch) ---
 function parseCSV(text){
@@ -130,6 +130,44 @@ function computeActual(contractList, trafficList){
     } else merged.push({...it});
   }
   return merged;
+}
+
+// Split merged actual intersections by guide boundaries (T or Q)
+function computeActualSegments(contractList, trafficList, guideType, year){
+  const intersections = computeActual(contractList, trafficList);
+
+  const monthsPer = guideType === 'quarter' ? 3 : 4;
+  const boundaries = [new Date(year, 0, 1)];
+  for(let m = monthsPer; m < 12; m += monthsPer){
+    boundaries.push(new Date(year, m, 1));
+  }
+  boundaries.push(new Date(year + 1, 0, 1)); // cap at next year start
+
+  const segments = [];
+  for(const inter of intersections){
+    let start = parseDate(inter.start);
+    let end = parseDate(inter.end);
+
+    // Clip to the current year span
+    if(end < boundaries[0] || start >= boundaries[boundaries.length-1]) continue;
+    start = start < boundaries[0] ? boundaries[0] : start;
+    const lastValidEnd = new Date(boundaries[boundaries.length-1].getTime() - DAY_MS);
+    end = end > lastValidEnd ? lastValidEnd : end;
+    if(start > end) continue;
+
+    // Split this intersection at each boundary; do not merge back
+    for(let i = 1; i < boundaries.length; i++){
+      const segStart = start > boundaries[i-1] ? start : boundaries[i-1];
+      const segEndLimit = new Date(boundaries[i].getTime() - DAY_MS);
+      const segEnd = end < segEndLimit ? end : segEndLimit;
+      if(segStart <= segEnd){
+        segments.push({ start: fmtDate(segStart), end: fmtDate(segEnd) });
+      }
+      if(end <= segEndLimit) break;
+    }
+  }
+
+  return segments;
 }
 
 // --- Drawing ---
@@ -244,8 +282,8 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   });
 
   // Actual = intersection
-  const actual = computeActual(contractPeriods, trafficPeriods);
-  actual.forEach((p)=>{
+  const actualSegments = computeActualSegments(contractPeriods, trafficPeriods, guideType, year);
+  actualSegments.forEach((p)=>{
     if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
     const x = Math.max(padLeft, xFor(p.start));
     const x2 = Math.min(padLeft+innerW, xFor(p.end));
