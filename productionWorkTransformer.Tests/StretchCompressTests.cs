@@ -28,7 +28,7 @@ namespace productionWorkTransformer.Tests
         #region Compression Tests
 
         [Fact]
-        public void Compress_ReducesTimeSpaToTargetDuration()
+        public void Compress_ReducesTimeSpanToTargetDuration()
         {
             // Arrange
             var items = CreateTestData();
