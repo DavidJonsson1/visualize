@@ -24,6 +24,7 @@
     .tooltip{position:fixed;padding:8px 10px;background:#0b1220;color:#fff;border-radius:6px;font-size:13px;pointer-events:none;z-index:999;display:none}
     .controls{display:flex;gap:8px;margin-top:12px;align-items:center}
     button{background:#0f172a;color:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer}
+.primary-btn{background:#0f172a;color:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer}
     .muted{color:#64748b;font-size:13px}
     .fields{display:flex;gap:12px;margin-top:12px}
     textarea{width:100%;min-height:92px;font-family:monospace;padding:8px;border-radius:8px;border:1px solid #cbd5e1}
@@ -40,7 +41,7 @@
     <div class="legend">
       <div class="item"><span class="swatch contract"></span> Contract</div>
       <div class="item"><span class="swatch traffic"></span> Traffic</div>
-      <div class="item"><span class="swatch actual"></span> Production / newSplit (actual = traffic x contract)</div>
+      <div class="item"><span class="swatch actual"></span> Production (from production.csv, aggregated per tertial T1/T2/T3)</div>
     </div>
 
     <div class="fields">
@@ -52,14 +53,23 @@
         <label class="small"><strong>trafic.csv</strong> (editable)</label>
         <textarea id="trafficCsv"></textarea>
       </div>
+      <div class="col">
+        <label class="small"><strong>production.csv</strong> (editable)</label>
+        <textarea id="productionCsv"></textarea>
+      </div>
+      <div class="col">
+        <label class="small"><strong>custom-map.csv</strong> (custom view mapping)</label>
+        <textarea id="customMapCsv"></textarea>
+        <div class="small">Columns: start,end,factor,sourceT (T1/T2/T3)</div>
+      </div>
     </div>
 
     <div class="row" style="margin-top:8px;">
-      <button id="applyBtn">Apply CSV</button>
+      <button id="applyBtn" class="primary-btn">Apply CSV</button>
       <button id="resetBtn">Reset to example</button>
       <button id="exportCsv">Export merged CSV</button>
       <div style="flex:1"></div>
-      <div class="small">Detected year: <strong id="yearLabel">—</strong></div>
+      <div class="small">Detected year: <strong id="yearLabel">-</strong></div>
     </div>
 
     <div class="svg-wrap" style="margin-top:12px;padding:8px;">
@@ -67,8 +77,39 @@
     </div>
 
     <div class="svg-wrap" style="margin-top:12px;padding:8px;">
-      <div class="small" style="margin-bottom:6px;">Quarter view (Q1–Q4)</div>
-      <svg id="timelineQuarter" width="1000" height="260" aria-label="timeline-quarters"></svg>
+      <div class="small" style="margin-bottom:6px;">Custom view (C1=Q1, C2=Q2, C3=Q3+Q4)</div>
+      <svg id="timelineCustom" width="1000" height="260" aria-label="timeline-custom"></svg>
+    </div>
+
+    <div class="svg-wrap" style="margin-top:12px;padding:8px;">
+      <div class="small" style="margin-bottom:6px;">Split view (contract / traffic / DateFrame)</div>
+      <svg id="timelineSplit" width="1000" height="260" aria-label="timeline-split"></svg>
+    </div>
+
+    <div class="fields" style="margin-top:12px;">
+      <div class="col">
+        <label class="small"><strong>NewSplit</strong></label>
+        <textarea id="newSplitRanges" style="width:50%;min-height:80px;font-family:monospace;padding:8px;border-radius:8px;border:1px solid #cbd5e1;">start,end
+2025-01-01,2025-03-31
+2025-04-01,2025-06-30
+2025-07-01,2025-09-30
+2025-10-01,2025-12-31</textarea>
+        <div class="row" style="margin-top:6px; gap:8px; align-items:center;">
+          <div class="small">Enter one range per line (start,end). Can be days, months, or custom periods.</div>
+          <button id="applyBtnSplit" type="button" class="primary-btn">Apply CSV</button>
+        </div>
+      </div>
+      <div class="col">
+        <label class="small"><strong>Recalculate</strong></label>
+        <div class="row">
+          <span class="small" style="width:70px;">FromDate</span>
+          <input id="recalcFrom" type="text" value="2025-07-01" style="flex:1;padding:6px;border:1px solid #cbd5e1;border-radius:6px;" />
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <span class="small" style="width:70px;">ToDate</span>
+          <input id="recalcTo" type="text" value="2025-12-31" style="flex:1;padding:6px;border:1px solid #cbd5e1;border-radius:6px;" />
+        </div>
+      </div>
     </div>
 
     <div id="status" class="small" style="margin-top:8px;color:#334155"></div>
@@ -79,11 +120,20 @@
 <script>
 // Embedded CSV examples (editable strings). Modify these directly then click Apply CSV.
 const exampleContract = `start,end
-2025-03-01,2025-12-31`;
+2025-02-01,2025-12-31`;
 const exampleTraffic = `start,end
-2025-01-23,2025-04-28
+2025-01-23,2025-03-10
+2025-04-23,2025-06-20
 2025-08-01,2025-10-24
 2025-11-14,2025-12-10`;
+const exampleProduction = `start,end,number,tertial
+2025-01-01,2025-04-28,180,T1
+2025-04-01,2025-08-31,200,T2
+2025-09-01,2025-12-31,380,T3`;
+const exampleCustomMap = `start,end,factor,sourceT,targetC
+2025-01-01,2025-03-31,1,T1,C1
+2025-04-01,2025-06-30,1,T2,C2
+2025-07-01,2025-12-31,1,T3,C3`;
 
 // --- Minimal CSV parsing utilities (file:// friendly — no fetch) ---
 function parseCSV(text){
@@ -102,9 +152,13 @@ function parseCSV(text){
   return rows.filter(r=>r.start && r.end);
 }
 const DAY_MS = 24*60*60*1000;
-function parseDate(s){ return new Date(s + 'T00:00:00'); }
+function parseDate(s){
+  const [y,m,d] = s.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
 function fmtDate(d){ return d.toISOString().slice(0,10); }
 function daysBetween(a,b){ return Math.round((b - a) / DAY_MS); }
+function addDays(d, days){ return new Date(d.getTime() + days*DAY_MS); }
 
 function intersectIntervals(a,b){
   const s = new Date(Math.max(parseDate(a.start), parseDate(b.start)));
@@ -132,16 +186,90 @@ function computeActual(contractList, trafficList){
   return merged;
 }
 
-// Split merged actual intersections by guide boundaries (T or Q)
+// Production CSV parsing and aggregation (start,end,number,tertial). Aggregates per T1/T2/T3, aligns start to tertial start.
+function parseProductionRows(text){
+  if(!text) return [];
+  const lines = text.trim().split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  if(!lines.length) return [];
+  const header = lines[0].split(',').map(h=>h.trim().toLowerCase());
+  const idx = (name)=> header.indexOf(name);
+  const si = idx('start');
+  const ei = idx('end');
+  const ni = (()=>{
+    const n = idx('number'); if(n !== -1) return n;
+    const v = idx('value'); if(v !== -1) return v;
+    const num = idx('num'); if(num !== -1) return num;
+    return -1;
+  })();
+  const ti = (()=> {
+    const t = idx('tertial'); if(t !== -1) return t;
+    return idx('t');
+  })();
+
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const cols = lines[i].split(',').map(c=>c.trim());
+    const start = si >=0 ? cols[si] : cols[0];
+    const end = ei >=0 ? cols[ei] : (cols.length > 1 ? cols[1] : '');
+    const number = ni >=0 && ni < cols.length ? Number(cols[ni]) : 0;
+    const tertial = ti >=0 && ti < cols.length ? cols[ti].toUpperCase() : '';
+    rows.push({ start, end, value: number, tertial });
+  }
+
+  return rows.filter(r=> r.start && r.end && (r.tertial === 'T1' || r.tertial === 'T2' || r.tertial === 'T3'));
+}
+
+function aggregateProduction(rows, year){
+  const bounds = buildBoundaries('tertial', year); // [T1 start, T2 start, T3 start, next year]
+  const agg = { T1: null, T2: null, T3: null };
+  for(const r of rows){
+    const cur = agg[r.tertial];
+    if(!cur){
+      agg[r.tertial] = { start: r.start, end: r.end, value: r.value, tertial: r.tertial, rawStart: r.start, rawEnd: r.end };
+    }else{
+      if(parseDate(r.start) < parseDate(cur.start)) cur.start = r.start;
+      if(parseDate(r.end) > parseDate(cur.end)) cur.end = r.end;
+      if(parseDate(r.start) < parseDate(cur.rawStart)) cur.rawStart = r.start;
+      if(parseDate(r.end) > parseDate(cur.rawEnd)) cur.rawEnd = r.end;
+      cur.value += r.value;
+    }
+  }
+
+  // Clamp/align to tertial windows
+  const result = [];
+  for(const t of ['T1','T2','T3']){
+    const seg = agg[t];
+    if(!seg) continue;
+    const idx = t === 'T1' ? 0 : t === 'T2' ? 1 : 2;
+    const startBoundary = bounds[idx];
+    const endBoundary = addDays(bounds[idx+1], -1);
+    const start = startBoundary;
+    const end = parseDate(seg.end) > endBoundary ? endBoundary : parseDate(seg.end);
+    result.push({
+      start: fmtDate(start),
+      end: fmtDate(end),
+      value: seg.value,
+      tertial: t,
+      rawStart: seg.rawStart,
+      rawEnd: seg.rawEnd
+    });
+  }
+  return result;
+}
+
+function buildBoundaries(guideType, year){
+  if(guideType === 'custom'){
+    return [new Date(year,0,1), new Date(year,3,1), new Date(year,6,1), new Date(year+1,0,1)]; // C3 spans Q3+Q4
+  }
+  // default tertial
+  return [new Date(year,0,1), new Date(year,4,1), new Date(year,8,1), new Date(year+1,0,1)];
+}
+
+// Split merged actual intersections by guide boundaries (T or C)
 function computeActualSegments(contractList, trafficList, guideType, year){
   const intersections = computeActual(contractList, trafficList);
 
-  const monthsPer = guideType === 'quarter' ? 3 : 4;
-  const boundaries = [new Date(year, 0, 1)];
-  for(let m = monthsPer; m < 12; m += monthsPer){
-    boundaries.push(new Date(year, m, 1));
-  }
-  boundaries.push(new Date(year + 1, 0, 1)); // cap at next year start
+  const boundaries = buildBoundaries(guideType, year);
 
   const segments = [];
   for(const inter of intersections){
@@ -170,8 +298,351 @@ function computeActualSegments(contractList, trafficList, guideType, year){
   return segments;
 }
 
+// Parse custom map: start,end,factor,sourceT (T1/T2/T3)
+function parseCustomMap(text){
+  if(!text) return [];
+  const lines = text.trim().split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  if(!lines.length) return [];
+  const header = lines[0].split(',').map(h=>h.trim().toLowerCase());
+  const idx = (name)=> header.indexOf(name);
+  const si = idx('start');
+  const ei = idx('end');
+  const fi = (()=> {
+    const f = idx('factor'); if(f !== -1) return f;
+    return idx('f');
+  })();
+  const ti = (()=> {
+    const t = idx('sourcet'); if(t !== -1) return t;
+    return idx('source');
+  })();
+  const ci = (()=> {
+    const c = idx('targetc'); if(c !== -1) return c;
+    const t = idx('target'); if(t !== -1) return t;
+    return -1;
+  })();
+
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const cols = lines[i].split(',').map(c=>c.trim());
+    const start = si >=0 ? cols[si] : cols[0];
+    const end = ei >=0 ? cols[ei] : (cols.length > 1 ? cols[1] : '');
+    const factor = fi >=0 && fi < cols.length ? Number(cols[fi]) : 1;
+    const sourceT = ti >=0 && ti < cols.length ? cols[ti].toUpperCase() : '';
+    const targetC = ci >=0 && ci < cols.length ? cols[ci].toUpperCase() : '';
+    rows.push({ start, end, factor, sourceT, targetC });
+  }
+
+  return rows.filter(r=> r.start && r.end && r.targetC && (r.sourceT === 'T1' || r.sourceT === 'T2' || r.sourceT === 'T3'));
+}
+
+// Parse free-form split ranges (start,end per line) into boundaries for guides and cutting
+function parseSplitRanges(text){
+  if(!text) return { lines: [], cuts: [] };
+  const rows = parseCSV(text);
+  const starts = [];
+  let maxEnd = null;
+  for(const r of rows){
+    if(r.start){
+      const d = parseDate(r.start);
+      if(!isNaN(d)) starts.push(d);
+    }
+    if(r.end){
+      const e = parseDate(r.end);
+      if(!isNaN(e)){
+        if(maxEnd === null || e > maxEnd) maxEnd = e;
+      }
+    }
+  }
+  const lineStarts = Array.from(new Set(starts.map(d=>d.getTime()))).sort((a,b)=>a-b).map(ms=> new Date(ms));
+  const cuts = [...lineStarts];
+  if(maxEnd !== null){
+    const endPlusOne = addDays(maxEnd, 1);
+    cuts.push(endPlusOne);
+  }
+  return { lines: lineStarts, cuts: cuts.sort((a,b)=>a-b) };
+}
+
+
+// Build Custom segments from production using mapping rows (factor scales value; spans use mapping start/end)
+function buildCustomSegments(productionSegments, mapRows){
+  const prodByT = { T1: null, T2: null, T3: null };
+  for(const seg of productionSegments){
+    prodByT[seg.tertial] = seg;
+  }
+  const mapped = [];
+  for(const row of mapRows){
+    const src = prodByT[row.sourceT];
+    if(!src) continue;
+    const factor = isFinite(row.factor) ? row.factor : 1;
+    mapped.push({
+      start: row.start,
+      end: row.end,
+      value: src.value * factor,
+      sourceT: row.sourceT,
+      factor,
+      targetC: row.targetC,
+      rawStart: row.start,
+      rawEnd: row.end
+    });
+  }
+  return mapped;
+}
+
+// Group custom segments by targetC (one bar per targetC)
+function combineCustomByTargetC(segments){
+  const grouped = {};
+  for(const s of segments){
+    const key = s.targetC || 'C?';
+    if(!grouped[key]){
+      grouped[key] = {
+        targetC: key,
+        start: s.start,
+        end: s.end,
+        value: (s.value !== undefined && !Number.isNaN(s.value)) ? s.value : 0,
+        rawStart: s.rawStart ?? s.start,
+        rawEnd: s.rawEnd ?? s.end
+      };
+    }else{
+      const g = grouped[key];
+      if(parseDate(s.start) < parseDate(g.start)) g.start = s.start;
+      if(parseDate(s.end) > parseDate(g.end)) g.end = s.end;
+      if(parseDate(s.rawStart ?? s.start) < parseDate(g.rawStart)) g.rawStart = s.rawStart ?? s.start;
+      if(parseDate(s.rawEnd ?? s.end) > parseDate(g.rawEnd)) g.rawEnd = s.rawEnd ?? s.end;
+      const val = (s.value !== undefined && !Number.isNaN(s.value)) ? s.value : 0;
+      g.value += val;
+    }
+  }
+  return Object.values(grouped);
+}
+
+// Split arbitrary segments by boundary dates (inclusive intervals)
+function splitSegmentsByBoundaries(segments, boundaries){
+  if(!boundaries || boundaries.length === 0) return segments;
+  const sorted = [...boundaries].sort((a,b)=>a-b);
+  const result = [];
+  for(const seg of segments){
+    let start = parseDate(seg.start);
+    let end = parseDate(seg.end);
+    if(start > end) continue;
+    for(let i=0; i<sorted.length; i++){
+      const bStart = sorted[i];
+      const bEnd = (i + 1 < sorted.length) ? addDays(sorted[i+1], -1) : end;
+      const segStart = start > bStart ? start : bStart;
+      const segEnd = end < bEnd ? end : bEnd;
+      if(segStart <= segEnd){
+        result.push({
+          ...seg,
+          start: fmtDate(segStart),
+          end: fmtDate(segEnd)
+        });
+      }
+      if(end <= bEnd) break;
+    }
+  }
+  return result;
+}
+
+// Build distribution segments: sum DateFrame days per targetC (using custom spans), only if DateFrame start within recalc window
+function buildDistributionSegments(dateFrameSegments, customTargets, recalcFrom, recalcTo){
+  if(!dateFrameSegments || !customTargets) return [];
+  const from = recalcFrom ? parseDate(recalcFrom) : null;
+  const to = recalcTo ? parseDate(recalcTo) : null;
+
+  // Total across all DateFrame segments (count excluded as 1 once)
+  let totalAll = 0;
+  let countedExcludedAll = false;
+  for(const df of dateFrameSegments){
+    const dfStart = parseDate(df.start);
+    const dfEnd = parseDate(df.end);
+    const withinRecalc = (!from || dfStart >= from) && (!to || dfStart <= to);
+    if(!withinRecalc){
+      if(!countedExcludedAll){
+        totalAll += 1;
+        countedExcludedAll = true;
+      }
+      continue;
+    }
+    totalAll += daysBetween(dfStart, dfEnd) + 1;
+  }
+  if(totalAll === 0) totalAll = 1; // avoid divide by zero
+
+  const dist = [];
+  for(const ct of customTargets){
+    let totalDays = 0;
+    let hasOverlap = false;
+    let hasExcluded = false;
+    for(const df of dateFrameSegments){
+      const dfStart = parseDate(df.start);
+      const dfEnd = parseDate(df.end);
+      const withinRecalc = (!from || dfStart >= from) && (!to || dfStart <= to);
+      if(!withinRecalc){
+        hasExcluded = true;
+        continue;
+      }
+      // overlap df with target span
+      const overlapStart = dfStart > parseDate(ct.start) ? dfStart : parseDate(ct.start);
+      const overlapEnd = dfEnd < parseDate(ct.end) ? dfEnd : parseDate(ct.end);
+      if(overlapEnd >= overlapStart){
+        totalDays += daysBetween(overlapStart, overlapEnd) + 1;
+        hasOverlap = true;
+      }
+    }
+    let targetTotal = totalAll;
+    // If no overlap within recalc but we had excluded segments, present as 1/1
+    if(!hasOverlap && hasExcluded){
+      totalDays = 1;
+      targetTotal = 1;
+    }
+    dist.push({
+      start: ct.start,
+      end: ct.end,
+      value: totalDays,
+      total: targetTotal,
+      rawStart: ct.start,
+      rawEnd: ct.end,
+      targetC: ct.targetC
+    });
+  }
+  return dist;
+}
+
+// Build split-based distribution: sum DateFrame days per split interval; denominator = total across all intervals
+function buildSplitDistribution(splitSegments, cutBoundaries, recalcFrom, recalcTo){
+  if(!splitSegments || !cutBoundaries || cutBoundaries.length < 2) return [];
+  const from = recalcFrom ? parseDate(recalcFrom) : null;
+  const to = recalcTo ? parseDate(recalcTo) : null;
+  const intervals = [];
+
+  // Precompute interval spans
+  for(let i=0; i<cutBoundaries.length - 1; i++){
+    const spanStart = cutBoundaries[i];
+    const spanEnd = addDays(cutBoundaries[i+1], -1);
+    let val = 0;
+    let included = (!from || spanStart >= from) && (!to || spanStart <= to);
+    if(included){
+      for(const seg of splitSegments){
+        const segStart = parseDate(seg.start);
+        if(segStart < spanStart || segStart > spanEnd) continue;
+        const segEnd = parseDate(seg.end);
+        const oStart = segStart > spanStart ? segStart : spanStart;
+        const oEnd = segEnd < spanEnd ? segEnd : spanEnd;
+        if(oEnd >= oStart){
+          val += daysBetween(oStart, oEnd) + 1;
+        }
+      }
+      // if still zero but included, leave zero for now
+    } else {
+      val = 1; // outside recalc: fixed 1/1
+    }
+    intervals.push({
+      start: fmtDate(spanStart),
+      end: fmtDate(spanEnd),
+      value: val,
+      included,
+      rawStart: fmtDate(spanStart),
+      rawEnd: fmtDate(spanEnd)
+    });
+  }
+
+  let totalIncluded = intervals.filter(s=>s.included).reduce((sum,s)=> sum + (s.value || 0), 0);
+  if(totalIncluded === 0) totalIncluded = 1;
+
+  intervals.forEach(s=>{
+    s.total = s.included ? totalIncluded : 1;
+    // ensure numerator non-zero when included but empty
+    if(s.included && s.value === 0){
+      s.value = 1;
+      s.total = 1; // show 1/1 if nothing inside recalc
+    }
+  });
+  return intervals;
+}
+
+// Build split-based NewProd segments: split custom segments by boundaries and scale value by distribution factor (only inside recalc)
+function buildSplitNewProd(customSegments, cutBoundaries, distIntervals, recalcFrom, recalcTo){
+  if(!customSegments) return [];
+  const from = recalcFrom ? parseDate(recalcFrom) : null;
+  const to = recalcTo ? parseDate(recalcTo) : null;
+  const splitCustom = splitSegmentsByBoundaries(customSegments, cutBoundaries);
+  const result = [];
+  for(const seg of splitCustom){
+    const segStart = parseDate(seg.start);
+    const segEnd = parseDate(seg.end);
+    const withinRecalc = (!from || segStart >= from) && (!to || segStart <= to);
+    let factor = 1;
+    if(withinRecalc && distIntervals){
+      const match = distIntervals.find(d=>{
+        const dStart = parseDate(d.start);
+        const dEnd = parseDate(d.end);
+        return segStart >= dStart && segStart <= dEnd;
+      });
+      if(match && match.total){
+        factor = match.value / match.total;
+      }
+    }
+    const newVal = (seg.value !== undefined && !Number.isNaN(seg.value))
+      ? Math.round(seg.value * factor)
+      : seg.value;
+    result.push({
+      ...seg,
+      value: newVal
+    });
+  }
+  return result;
+}
+
+// Split arbitrary segments by boundary dates (inclusive intervals)
+function splitSegmentsByBoundaries(segments, boundaries){
+  if(!boundaries || boundaries.length === 0) return segments;
+  const sorted = [...boundaries].sort((a,b)=>a-b);
+  const result = [];
+  for(const seg of segments){
+    let start = parseDate(seg.start);
+    let end = parseDate(seg.end);
+    if(start > end) continue;
+    for(let i=0; i<sorted.length; i++){
+      const bStart = sorted[i];
+      const bEnd = (i + 1 < sorted.length) ? addDays(sorted[i+1], -1) : end;
+      const segStart = start > bStart ? start : bStart;
+      const segEnd = end < bEnd ? end : bEnd;
+      if(segStart <= segEnd){
+        result.push({
+          ...seg,
+          start: fmtDate(segStart),
+          end: fmtDate(segEnd)
+        });
+      }
+      if(end <= bEnd) break;
+    }
+  }
+  return result;
+}
+
+// Derive custom guide boundaries from distinct targetC spans (outer dates per targetC)
+function buildCustomBoundaries(mapRows){
+  const spans = {};
+  for(const r of mapRows){
+    if(!r.targetC) continue;
+    if(!spans[r.targetC]){
+      spans[r.targetC] = { start: r.start, end: r.end };
+    }else{
+      if(parseDate(r.start) < parseDate(spans[r.targetC].start)) spans[r.targetC].start = r.start;
+      if(parseDate(r.end) > parseDate(spans[r.targetC].end)) spans[r.targetC].end = r.end;
+    }
+  }
+  const entries = Object.entries(spans).map(([k,v])=>({ name:k, start: parseDate(v.start), end: parseDate(v.end) }));
+  entries.sort((a,b)=> a.start - b.start || a.name.localeCompare(b.name));
+  // boundaries as the start of each C; also append last end
+  const boundaries = entries.map(e=> e.start);
+  if(entries.length){
+    const lastEnd = entries.reduce((max,e)=> e.end > max ? e.end : max, entries[0].end);
+    boundaries.push(lastEnd);
+  }
+  return boundaries;
+}
+
 // --- Drawing ---
-function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'tertial', svgId = 'timeline'}){
+function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'tertial', svgId = 'timeline', productionSegments = null, actualSegmentsOverride = null, dateFrameSegments = null, distributionSegments = null, guideBoundaries = null, guidePrefixOverride = null}){
   const svg = document.getElementById(svgId);
   const W = Math.max(900, svg.clientWidth || 1000);
   svg.setAttribute('width', W);
@@ -187,8 +658,11 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   const innerW = W - padLeft - padRight;
   function xFor(dateStr){ return padLeft + ( (parseDate(dateStr) - viewStart) / totalMs ) * innerW; }
 
-  const actualLabel = guideType === 'quarter' ? 'newSplit' : 'Production';
-  const rows = [ 'Contract', 'Traffic', actualLabel ];
+  const actualLabel = guideType === 'custom' ? 'NewProd' : 'Production';
+  const rows = ['Contract', 'Traffic'];
+  if(dateFrameSegments){ rows.push('DateFrame'); }
+  if(distributionSegments){ rows.push('Distribution'); }
+  rows.push(actualLabel);
   const rowHeight = 42;
   const startY = 50;
 
@@ -233,6 +707,12 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   });
 
   // Draw contract bars
+  const contractRow = rows.indexOf('Contract');
+  const trafficRow = rows.indexOf('Traffic');
+  const dateFrameRow = rows.indexOf('DateFrame');
+  const distributionRow = rows.indexOf('Distribution');
+  const actualRow = rows.indexOf(actualLabel);
+
   contractPeriods.forEach((p)=>{
     if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
     const x = Math.max(padLeft, xFor(p.start));
@@ -240,7 +720,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     const w = Math.max(2, x2-x);
     const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
     rect.setAttribute('x', x);
-    rect.setAttribute('y', startY + 0*rowHeight + 12);
+    rect.setAttribute('y', startY + contractRow*rowHeight + 12);
     rect.setAttribute('width', w);
     rect.setAttribute('height', rowHeight - 24);
     rect.setAttribute('rx', 6);
@@ -259,7 +739,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     const w = Math.max(2, x2-x);
     const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
     rect.setAttribute('x', x);
-    rect.setAttribute('y', startY + 1*rowHeight + 12);
+    rect.setAttribute('y', startY + trafficRow*rowHeight + 12);
     rect.setAttribute('width', w);
     rect.setAttribute('height', rowHeight - 24);
     rect.setAttribute('rx', 6);
@@ -274,7 +754,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     if (w >= 24) {
       const label = document.createElementNS('http://www.w3.org/2000/svg','text');
       label.setAttribute('x', x + w/2);
-      label.setAttribute('y', startY + 1*rowHeight + rowHeight/2 + 3);
+      label.setAttribute('y', startY + trafficRow*rowHeight + rowHeight/2 + 3);
       label.setAttribute('class', 'bar-label');
       label.setAttribute('text-anchor', 'middle');
       label.textContent = duration;
@@ -282,8 +762,74 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     }
   });
 
-  // Actual = intersection
-  const actualSegments = computeActualSegments(contractPeriods, trafficPeriods, guideType, year);
+  // DateFrame = contract ∩ traffic (with current guide split)
+  if(dateFrameSegments){
+    dateFrameSegments.forEach((p)=>{
+      if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
+      const x = Math.max(padLeft, xFor(p.start));
+      const x2 = Math.min(padLeft+innerW, xFor(p.end));
+      const w = Math.max(2, x2-x);
+      const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      rect.setAttribute('x', x);
+      rect.setAttribute('y', startY + dateFrameRow*rowHeight + 12);
+      rect.setAttribute('width', w);
+      rect.setAttribute('height', rowHeight - 24);
+      rect.setAttribute('rx', 6);
+      rect.setAttribute('class','bar');
+      rect.setAttribute('fill','#cbd5e1');
+      rect.addEventListener('mousemove', (ev)=> showTip(ev, 'DateFrame', p));
+      rect.addEventListener('mouseleave', hideTip);
+      svg.appendChild(rect);
+
+      const duration = daysBetween(parseDate(p.start), parseDate(p.end)) + 1;
+      if (w >= 24) {
+        const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+        label.setAttribute('x', x + w/2);
+        label.setAttribute('y', startY + dateFrameRow*rowHeight + rowHeight/2 + 3);
+        label.setAttribute('class', 'bar-label');
+        label.setAttribute('text-anchor', 'middle');
+        label.textContent = duration;
+        svg.appendChild(label);
+      }
+    });
+  }
+
+  // Distribution = aggregated DateFrame per targetC (optional)
+  if(distributionSegments){
+    distributionSegments.forEach((p)=>{
+      if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
+      const x = Math.max(padLeft, xFor(p.start));
+      const x2 = Math.min(padLeft+innerW, xFor(p.end));
+      const w = Math.max(2, x2-x);
+      const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      rect.setAttribute('x', x);
+      rect.setAttribute('y', startY + distributionRow*rowHeight + 12);
+      rect.setAttribute('width', w);
+      rect.setAttribute('height', rowHeight - 24);
+      rect.setAttribute('rx', 6);
+      rect.setAttribute('class','bar');
+      rect.setAttribute('fill','#c4b5fd');
+      rect.addEventListener('mousemove', (ev)=> showTip(ev, 'Distribution', p));
+      rect.addEventListener('mouseleave', hideTip);
+      svg.appendChild(rect);
+
+      const labelText = (p.value !== undefined && p.total !== undefined)
+        ? `${p.value}/${p.total} (${Math.round((p.value/p.total)*100)}%)`
+        : (p.value ?? '');
+      if (w >= 24 && labelText !== ''){
+        const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+        label.setAttribute('x', x + w/2);
+        label.setAttribute('y', startY + distributionRow*rowHeight + rowHeight/2 + 3);
+        label.setAttribute('class', 'bar-label');
+        label.setAttribute('text-anchor', 'middle');
+        label.textContent = labelText;
+        svg.appendChild(label);
+      }
+    });
+  }
+
+  // Actual = production/custom
+  let actualSegments = actualSegmentsOverride || computeActualSegments(contractPeriods, trafficPeriods, guideType, year);
   actualSegments.forEach((p)=>{
     if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
     const x = Math.max(padLeft, xFor(p.start));
@@ -291,7 +837,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     const w = Math.max(2, x2-x);
     const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
     rect.setAttribute('x', x);
-    rect.setAttribute('y', startY + 2*rowHeight + 12);
+    rect.setAttribute('y', startY + actualRow*rowHeight + 12);
     rect.setAttribute('width', w);
     rect.setAttribute('height', rowHeight - 24);
     rect.setAttribute('rx', 6);
@@ -301,15 +847,16 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     rect.addEventListener('mouseleave', hideTip);
     svg.appendChild(rect);
 
-    // Add duration label if space allows
+    // Add label if space allows (prefer value if present, else duration)
     const duration = daysBetween(parseDate(p.start), parseDate(p.end)) + 1;
+    const labelText = (p.value !== undefined && !Number.isNaN(p.value)) ? p.value : duration;
     if (w >= 24) {
       const label = document.createElementNS('http://www.w3.org/2000/svg','text');
       label.setAttribute('x', x + w/2);
-      label.setAttribute('y', startY + 2*rowHeight + rowHeight/2 + 3);
+      label.setAttribute('y', startY + actualRow*rowHeight + rowHeight/2 + 3);
       label.setAttribute('class', 'bar-label');
       label.setAttribute('text-anchor', 'middle');
-      label.textContent = duration;
+      label.textContent = labelText;
       svg.appendChild(label);
     }
   });
@@ -323,13 +870,12 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   axisLine.setAttribute('stroke', '#e2e8f0');
   svg.appendChild(axisLine);
 
-  // Guides (Tertial or Quarter) on top of other elements
-  const guideCount = guideType === 'quarter' ? 4 : 3;
-  const monthsPer = guideType === 'quarter' ? 3 : 4;
-  const labelPrefix = guideType === 'quarter' ? 'Q' : 'T';
+  // Guides (Tertial or Custom) on top of other elements
+  const boundaries = guideBoundaries ?? (guideType === 'custom' ? buildBoundaries('custom', year) : buildBoundaries('tertial', year));
+  const labelPrefix = guidePrefixOverride ?? (guideType === 'custom' ? 'C' : 'T');
 
-  for(let g=0; g<guideCount; g++){
-    const gDate = new Date(year, g*monthsPer, 1);
+  for(let g=0; g<boundaries.length; g++){
+    const gDate = boundaries[g];
     const x = padLeft + ((gDate - viewStart)/totalMs) * innerW;
     const line = document.createElementNS('http://www.w3.org/2000/svg','line');
     line.setAttribute('x1', x);
@@ -354,7 +900,11 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
 const tip = document.getElementById('tooltip');
 function showTip(ev, layer, period){
   tip.style.display = 'block';
-  tip.innerHTML = `<strong>${layer}</strong><br>${period.start} → ${period.end}<br>${daysBetween(parseDate(period.start), parseDate(period.end)) + 1} days`;
+  const displayStart = period.rawStart ?? period.start;
+  const displayEnd = period.rawEnd ?? period.end;
+  const days = daysBetween(parseDate(displayStart), parseDate(displayEnd)) + 1;
+  const valueLine = (period.value !== undefined && !Number.isNaN(period.value)) ? `<br>value: ${period.value}` : '';
+  tip.innerHTML = `<strong>${layer}</strong><br>${displayStart} - ${displayEnd}<br>${days} days${valueLine}`;
   const pad = 12;
   let left = ev.clientX + pad;
   let top = ev.clientY + pad;
@@ -368,24 +918,65 @@ function hideTip(){ tip.style.display = 'none'; }
 // --- UI wiring ---
 const contractTa = document.getElementById('contractCsv');
 const trafficTa = document.getElementById('trafficCsv');
+const productionTa = document.getElementById('productionCsv');
+const customMapTa = document.getElementById('customMapCsv');
+const newSplitTa = document.getElementById('newSplitRanges');
 const statusEl = document.getElementById('status');
 
 function applyCsv(){
   const contract = parseCSV(contractTa.value);
   const traffic = parseCSV(trafficTa.value);
-  if(!contract.length && !traffic.length){ statusEl.textContent = 'No valid rows in contract or trafic CSV.'; return; }
-  statusEl.textContent = `Loaded contract: ${contract.length} row(s), traffic: ${traffic.length} row(s)`;
-  const allStarts = [...contract, ...traffic].map(r=> parseDate(r.start)).filter(d=>!isNaN(d));
+  const productionRowsRaw = parseProductionRows(productionTa.value);
+  const customMapRows = parseCustomMap(customMapTa.value);
+  const split = parseSplitRanges(newSplitTa.value);
+  const splitLineBoundaries = split.lines;
+  const splitCutBoundaries = split.cuts;
+  const recalcFrom = document.getElementById('recalcFrom').value;
+  const recalcTo = document.getElementById('recalcTo').value;
+  if(!contract.length && !traffic.length && !productionRowsRaw.length){ statusEl.textContent = 'No valid rows in contract, trafic, or production CSV.'; return; }
+  const allStarts = [...contract, ...traffic, ...productionRowsRaw].map(r=> parseDate(r.start)).filter(d=>!isNaN(d));
   const year = allStarts.length ? allStarts.reduce((a,b)=>a<b?a:b).getFullYear() : new Date().getFullYear();
+  const productionRows = aggregateProduction(productionRowsRaw, year);
+  statusEl.textContent = `Loaded contract: ${contract.length} row(s), traffic: ${traffic.length} row(s), production: ${productionRows.length} tertial segment(s), custom map: ${customMapRows.length} row(s), split boundaries: ${splitLineBoundaries.length}`;
   document.getElementById('yearLabel').textContent = String(year);
   // make contract/traffic available to draw function
   window.contractPeriods = contract;
   window.trafficPeriods = traffic;
-  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic, guideType: 'tertial', svgId: 'timeline'});
-  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic, guideType: 'quarter', svgId: 'timelineQuarter'});
+  const productionSegments = productionRows;
+  const customSegments = buildCustomSegments(productionSegments, customMapRows);
+  const combinedCustomSegments = combineCustomByTargetC(customSegments);
+  const customBoundaries = buildCustomBoundaries(customMapRows);
+  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic, guideType: 'tertial', svgId: 'timeline', actualSegmentsOverride: productionSegments});
+  const dateFrameSegments = computeActual(contract, traffic).map(s => ({ ...s, rawStart: s.start, rawEnd: s.end }));
+  const splitDateFrame = splitSegmentsByBoundaries(dateFrameSegments, splitCutBoundaries);
+  const distributionSegments = buildSplitDistribution(splitDateFrame, splitCutBoundaries, recalcFrom, recalcTo);
+  const newProdSegments = buildSplitNewProd(combinedCustomSegments, splitCutBoundaries, distributionSegments, recalcFrom, recalcTo);
+  drawTimeline({
+    year,
+    contractPeriods: contract,
+    trafficPeriods: traffic,
+    guideType: 'custom',
+    svgId: 'timelineCustom',
+    actualSegmentsOverride: combinedCustomSegments,
+    dateFrameSegments,
+    guideBoundaries: customBoundaries,
+    guidePrefixOverride: 'C'
+  });
+  drawTimeline({
+    year,
+    contractPeriods: contract,
+    trafficPeriods: traffic,
+    guideType: 'custom',
+    svgId: 'timelineSplit',
+    actualSegmentsOverride: newProdSegments,
+    dateFrameSegments: splitDateFrame,
+    distributionSegments,
+    guideBoundaries: splitLineBoundaries,
+    guidePrefixOverride: 'S'
+  });
 }
 
-function resetExample(){ contractTa.value = exampleContract; trafficTa.value = exampleTraffic; applyCsv(); }
+function resetExample(){ contractTa.value = exampleContract; trafficTa.value = exampleTraffic; productionTa.value = exampleProduction; customMapTa.value = exampleCustomMap; applyCsv(); }
 
 // Export merged CSV (Contract/Traffic/Actual)
 function exportMerged(){
@@ -406,6 +997,7 @@ function exportMerged(){
 document.getElementById('applyBtn').addEventListener('click', applyCsv);
 document.getElementById('resetBtn').addEventListener('click', resetExample);
 document.getElementById('exportCsv').addEventListener('click', exportMerged);
+document.getElementById('applyBtnSplit').addEventListener('click', applyCsv);
 
 // initialize with example data
 resetExample();
@@ -413,3 +1005,9 @@ resetExample();
 </script>
 </body>
 </html>
+
+
+
+
+
+
