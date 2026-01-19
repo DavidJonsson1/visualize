@@ -549,11 +549,6 @@ function buildSplitDistribution(splitSegments, cutBoundaries, recalcFrom, recalc
 
   intervals.forEach(s=>{
     s.total = s.included ? totalIncluded : 1;
-    // ensure numerator non-zero when included but empty
-    if(s.included && s.value === 0){
-      s.value = 1;
-      s.total = 1; // show 1/1 if nothing inside recalc
-    }
   });
   return intervals;
 }
@@ -646,7 +641,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   const svg = document.getElementById(svgId);
   const W = Math.max(900, svg.clientWidth || 1000);
   svg.setAttribute('width', W);
-  svg.setAttribute('height', 260);
+  svg.setAttribute('height', 300);
   while(svg.firstChild) svg.removeChild(svg.firstChild);
 
   const viewStart = new Date(year + '-01-01T00:00:00');
@@ -830,6 +825,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
 
   // Actual = production/custom
   let actualSegments = actualSegmentsOverride || computeActualSegments(contractPeriods, trafficPeriods, guideType, year);
+  let actualTotal = 0;
   actualSegments.forEach((p)=>{
     if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
     const x = Math.max(padLeft, xFor(p.start));
@@ -850,6 +846,8 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     // Add label if space allows (prefer value if present, else duration)
     const duration = daysBetween(parseDate(p.start), parseDate(p.end)) + 1;
     const labelText = (p.value !== undefined && !Number.isNaN(p.value)) ? p.value : duration;
+    const numeric = (p.value !== undefined && !Number.isNaN(p.value)) ? p.value : duration;
+    actualTotal += numeric;
     if (w >= 24) {
       const label = document.createElementNS('http://www.w3.org/2000/svg','text');
       label.setAttribute('x', x + w/2);
@@ -860,6 +858,18 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
       svg.appendChild(label);
     }
   });
+
+  // Total label on the right for Actual row
+  if(actualSegments.length){
+    const totalText = document.createElementNS('http://www.w3.org/2000/svg','text');
+    totalText.setAttribute('x', padLeft + innerW - 6);
+    totalText.setAttribute('y', startY + (actualRow+1)*rowHeight + 6);
+    totalText.setAttribute('class','row-label');
+    totalText.setAttribute('fill','#0f172a');
+    totalText.setAttribute('text-anchor','end');
+    totalText.textContent = `Total: ${actualTotal}`;
+    svg.appendChild(totalText);
+  }
 
   // Bottom axis line
   const axisLine = document.createElementNS('http://www.w3.org/2000/svg','line');
@@ -1005,9 +1015,3 @@ resetExample();
 </script>
 </body>
 </html>
-
-
-
-
-
-
