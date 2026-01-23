@@ -65,6 +65,11 @@
     </div>
 
     <div class="row" style="margin-top:8px;">
+      <select id="datasetSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #cbd5e1;">
+        <option value="dataset1">DataSet 1</option>
+        <option value="dataset2">DataSet 2</option>
+      </select>
+      <button id="loadDataset">Load dataset</button>
       <button id="applyBtn" class="primary-btn">Apply CSV</button>
       <button id="resetBtn">Reset to example</button>
       <button id="exportCsv">Export merged CSV</button>
@@ -127,13 +132,57 @@ const exampleTraffic = `start,end
 2025-08-01,2025-10-24
 2025-11-14,2025-12-10`;
 const exampleProduction = `start,end,number,tertial
-2025-01-01,2025-04-28,180,T1
-2025-04-01,2025-08-31,200,T2
+2025-01-01,2025-04-30,180,T1
+2025-05-01,2025-08-31,200,T2
 2025-09-01,2025-12-31,380,T3`;
 const exampleCustomMap = `start,end,factor,sourceT,targetC
 2025-01-01,2025-03-31,1,T1,C1
 2025-04-01,2025-06-30,1,T2,C2
 2025-07-01,2025-12-31,1,T3,C3`;
+
+const defaultNewSplit = `start,end
+2025-01-01,2025-03-31
+2025-04-01,2025-06-30
+2025-07-01,2025-09-30
+2025-10-01,2025-12-31`;
+
+// Predefined datasets for quick loading
+const datasets = {
+  dataset1: {
+    label: 'DataSet 1',
+    contract: exampleContract,
+    traffic: exampleTraffic,
+    production: exampleProduction,
+    customMap: exampleCustomMap,
+    newSplit: defaultNewSplit,
+    recalcFrom: '2025-07-01',
+    recalcTo: '2025-12-31'
+  },
+  dataset2: {
+    label: 'DataSet 2',
+    contract: `start,end
+2019-01-01,2019-12-31`,
+    traffic: `start,end
+2019-02-10,2019-04-15
+2019-05-01,2019-07-20
+2019-08-05,2019-10-10`,
+    production: `start,end,number,tertial
+2019-01-01,2019-03-31,120,T1
+2019-04-01,2019-08-31,240,T2
+2019-09-01,2019-12-31,320,T3`,
+    customMap: `start,end,factor,sourceT,targetC
+2019-01-01,2019-03-31,1,T1,C1
+2019-04-01,2019-08-31,1,T2,C2
+2019-09-01,2019-12-31,1,T3,C2`,
+    newSplit: `start,end
+2019-01-01,2019-03-31
+2019-04-01,2019-06-30
+2019-07-01,2019-09-30
+2019-10-01,2019-12-31`,
+    recalcFrom: '2019-04-01',
+    recalcTo: '2019-12-31'
+  }
+};
 
 // --- Minimal CSV parsing utilities (file:// friendly — no fetch) ---
 function parseCSV(text){
@@ -556,25 +605,26 @@ function buildSplitDistribution(splitSegments, cutBoundaries, recalcFrom, recalc
 // Build split-based NewProd segments: split custom segments by boundaries and scale value by distribution factor (only inside recalc)
 function buildSplitNewProd(customSegments, cutBoundaries, distIntervals, recalcFrom, recalcTo){
   if(!customSegments) return [];
-  const from = recalcFrom ? parseDate(recalcFrom) : null;
-  const to = recalcTo ? parseDate(recalcTo) : null;
   const splitCustom = splitSegmentsByBoundaries(customSegments, cutBoundaries);
   const result = [];
   for(const seg of splitCustom){
     const segStart = parseDate(seg.start);
     const segEnd = parseDate(seg.end);
-    const withinRecalc = (!from || segStart >= from) && (!to || segStart <= to);
     let factor = 1;
-    if(withinRecalc && distIntervals){
+
+    if(distIntervals && distIntervals.length){
       const match = distIntervals.find(d=>{
         const dStart = parseDate(d.start);
         const dEnd = parseDate(d.end);
-        return segStart >= dStart && segStart <= dEnd;
+        return segStart <= dEnd && segEnd >= dStart;
       });
       if(match && match.total){
         factor = match.value / match.total;
+      }else{
+        factor = 0; // no matching interval; zero out
       }
     }
+
     const newVal = (seg.value !== undefined && !Number.isNaN(seg.value))
       ? Math.round(seg.value * factor)
       : seg.value;
@@ -634,6 +684,19 @@ function buildCustomBoundaries(mapRows){
     boundaries.push(lastEnd);
   }
   return boundaries;
+}
+
+// Build guide boundaries from production start dates (one line per Tn start)
+function buildProductionBoundaries(segments){
+  if(!segments || !segments.length) return [];
+  const starts = new Set();
+  for(const seg of segments){
+    const startStr = seg.rawStart || seg.start;
+    if(!startStr) continue;
+    const ms = parseDate(startStr).getTime();
+    if(!Number.isNaN(ms)) starts.add(ms);
+  }
+  return Array.from(starts).sort((a,b)=>a-b).map(ms=> new Date(ms));
 }
 
 // --- Drawing ---
@@ -827,9 +890,18 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
   let actualSegments = actualSegmentsOverride || computeActualSegments(contractPeriods, trafficPeriods, guideType, year);
   let actualTotal = 0;
   actualSegments.forEach((p)=>{
-    if(parseDate(p.end) < viewStart || parseDate(p.start) > viewEnd) return;
-    const x = Math.max(padLeft, xFor(p.start));
-    const x2 = Math.min(padLeft+innerW, xFor(p.end));
+    const rawStartDate = p.rawStart ? parseDate(p.rawStart) : parseDate(p.start);
+    const rawEndDate = p.rawEnd ? parseDate(p.rawEnd) : parseDate(p.end);
+    if(!rawStartDate || !rawEndDate) return;
+    const rawStartMs = rawStartDate.getTime();
+    const rawEndMs = rawEndDate.getTime();
+    if(Number.isNaN(rawStartMs) || Number.isNaN(rawEndMs)) return;
+    if(rawEndDate < viewStart || rawStartDate > viewEnd) return;
+    const startDate = rawStartDate < viewStart ? viewStart : rawStartDate;
+    const endDate = rawEndDate > viewEnd ? viewEnd : rawEndDate;
+    if(startDate > endDate) return;
+    const x = padLeft + ((startDate - viewStart)/totalMs) * innerW;
+    const x2 = padLeft + ((endDate - viewStart)/totalMs) * innerW;
     const w = Math.max(2, x2-x);
     const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
     rect.setAttribute('x', x);
@@ -844,7 +916,7 @@ function drawTimeline({year, contractPeriods, trafficPeriods, guideType = 'terti
     svg.appendChild(rect);
 
     // Add label if space allows (prefer value if present, else duration)
-    const duration = daysBetween(parseDate(p.start), parseDate(p.end)) + 1;
+    const duration = daysBetween(startDate, endDate) + 1;
     const labelText = (p.value !== undefined && !Number.isNaN(p.value)) ? p.value : duration;
     const numeric = (p.value !== undefined && !Number.isNaN(p.value)) ? p.value : duration;
     actualTotal += numeric;
@@ -932,6 +1004,9 @@ const productionTa = document.getElementById('productionCsv');
 const customMapTa = document.getElementById('customMapCsv');
 const newSplitTa = document.getElementById('newSplitRanges');
 const statusEl = document.getElementById('status');
+const datasetSelect = document.getElementById('datasetSelect');
+const recalcFromInput = document.getElementById('recalcFrom');
+const recalcToInput = document.getElementById('recalcTo');
 
 function applyCsv(){
   const contract = parseCSV(contractTa.value);
@@ -941,8 +1016,8 @@ function applyCsv(){
   const split = parseSplitRanges(newSplitTa.value);
   const splitLineBoundaries = split.lines;
   const splitCutBoundaries = split.cuts;
-  const recalcFrom = document.getElementById('recalcFrom').value;
-  const recalcTo = document.getElementById('recalcTo').value;
+  const recalcFrom = recalcFromInput.value;
+  const recalcTo = recalcToInput.value;
   if(!contract.length && !traffic.length && !productionRowsRaw.length){ statusEl.textContent = 'No valid rows in contract, trafic, or production CSV.'; return; }
   const allStarts = [...contract, ...traffic, ...productionRowsRaw].map(r=> parseDate(r.start)).filter(d=>!isNaN(d));
   const year = allStarts.length ? allStarts.reduce((a,b)=>a<b?a:b).getFullYear() : new Date().getFullYear();
@@ -953,10 +1028,19 @@ function applyCsv(){
   window.contractPeriods = contract;
   window.trafficPeriods = traffic;
   const productionSegments = productionRows;
+  const productionBoundaries = buildProductionBoundaries(productionSegments);
   const customSegments = buildCustomSegments(productionSegments, customMapRows);
   const combinedCustomSegments = combineCustomByTargetC(customSegments);
   const customBoundaries = buildCustomBoundaries(customMapRows);
-  drawTimeline({year, contractPeriods: contract, trafficPeriods: traffic, guideType: 'tertial', svgId: 'timeline', actualSegmentsOverride: productionSegments});
+  drawTimeline({
+    year,
+    contractPeriods: contract,
+    trafficPeriods: traffic,
+    guideType: 'tertial',
+    svgId: 'timeline',
+    actualSegmentsOverride: productionSegments,
+    guideBoundaries: productionBoundaries.length ? productionBoundaries : null
+  });
   const dateFrameSegments = computeActual(contract, traffic).map(s => ({ ...s, rawStart: s.start, rawEnd: s.end }));
   const splitDateFrame = splitSegmentsByBoundaries(dateFrameSegments, splitCutBoundaries);
   const distributionSegments = buildSplitDistribution(splitDateFrame, splitCutBoundaries, recalcFrom, recalcTo);
@@ -986,7 +1070,25 @@ function applyCsv(){
   });
 }
 
-function resetExample(){ contractTa.value = exampleContract; trafficTa.value = exampleTraffic; productionTa.value = exampleProduction; customMapTa.value = exampleCustomMap; applyCsv(); }
+function loadDataset(key, autoApply = true){
+  const ds = datasets[key];
+  if(!ds){
+    statusEl.textContent = `Dataset "${key}" not found.`;
+    return;
+  }
+  contractTa.value = ds.contract;
+  trafficTa.value = ds.traffic;
+  productionTa.value = ds.production;
+  customMapTa.value = ds.customMap;
+  if(ds.newSplit) newSplitTa.value = ds.newSplit;
+  if(ds.recalcFrom) recalcFromInput.value = ds.recalcFrom;
+  if(ds.recalcTo) recalcToInput.value = ds.recalcTo;
+  datasetSelect.value = key;
+  statusEl.textContent = `Loaded ${ds.label}.`;
+  if(autoApply) applyCsv();
+}
+
+function resetExample(){ loadDataset('dataset1', true); }
 
 // Export merged CSV (Contract/Traffic/Actual)
 function exportMerged(){
@@ -1008,6 +1110,7 @@ document.getElementById('applyBtn').addEventListener('click', applyCsv);
 document.getElementById('resetBtn').addEventListener('click', resetExample);
 document.getElementById('exportCsv').addEventListener('click', exportMerged);
 document.getElementById('applyBtnSplit').addEventListener('click', applyCsv);
+document.getElementById('loadDataset').addEventListener('click', ()=> loadDataset(datasetSelect.value, true));
 
 // initialize with example data
 resetExample();
