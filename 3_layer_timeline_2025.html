@@ -482,7 +482,9 @@ function splitSegmentsByBoundaries(segments, boundaries){
         result.push({
           ...seg,
           start: fmtDate(segStart),
-          end: fmtDate(segEnd)
+          end: fmtDate(segEnd),
+          rawStart: seg.rawStart || seg.start,
+          rawEnd: seg.rawEnd || seg.end
         });
       }
       if(end <= bEnd) break;
@@ -567,11 +569,11 @@ function buildSplitDistribution(splitSegments, cutBoundaries, recalcFrom, recalc
     const spanStart = cutBoundaries[i];
     const spanEnd = addDays(cutBoundaries[i+1], -1);
     let val = 0;
-    let included = (!from || spanStart >= from) && (!to || spanStart <= to);
+    // interval is included if it overlaps the recalc window
+    let included = (!from || spanEnd >= from) && (!to || spanStart <= to);
     if(included){
       for(const seg of splitSegments){
         const segStart = parseDate(seg.start);
-        if(segStart < spanStart || segStart > spanEnd) continue;
         const segEnd = parseDate(seg.end);
         const oStart = segStart > spanStart ? segStart : spanStart;
         const oEnd = segEnd < spanEnd ? segEnd : spanEnd;
@@ -598,41 +600,70 @@ function buildSplitDistribution(splitSegments, cutBoundaries, recalcFrom, recalc
 
   intervals.forEach(s=>{
     s.total = s.included ? totalIncluded : 1;
+    s.share = s.included ? (s.value / totalIncluded) : 0;
   });
   return intervals;
 }
 
 // Build split-based NewProd segments: split custom segments by boundaries and scale value by distribution factor (only inside recalc)
 function buildSplitNewProd(customSegments, cutBoundaries, distIntervals, recalcFrom, recalcTo){
-  if(!customSegments) return [];
-  const splitCustom = splitSegmentsByBoundaries(customSegments, cutBoundaries);
-  const result = [];
-  for(const seg of splitCustom){
-    const segStart = parseDate(seg.start);
-    const segEnd = parseDate(seg.end);
-    let factor = 1;
+  if(!customSegments || !distIntervals || !distIntervals.length) return [];
 
-    if(distIntervals && distIntervals.length){
-      const match = distIntervals.find(d=>{
-        const dStart = parseDate(d.start);
-        const dEnd = parseDate(d.end);
-        return segStart <= dEnd && segEnd >= dStart;
-      });
-      if(match && match.total){
-        factor = match.value / match.total;
-      }else{
-        factor = 0; // no matching interval; zero out
-      }
-    }
-
-    const newVal = (seg.value !== undefined && !Number.isNaN(seg.value))
-      ? Math.round(seg.value * factor)
-      : seg.value;
-    result.push({
-      ...seg,
-      value: newVal
-    });
+  // total custom value within recalc window (prorated by overlap)
+  const from = recalcFrom ? parseDate(recalcFrom) : null;
+  const to = recalcTo ? parseDate(recalcTo) : null;
+  let totalCustom = 0;
+  for(const seg of customSegments){
+    const segStart = parseDate(seg.rawStart || seg.start);
+    const segEnd = parseDate(seg.rawEnd || seg.end);
+    if(!segStart || !segEnd || Number.isNaN(segStart) || Number.isNaN(segEnd)) continue;
+    const windowStart = from && segStart < from ? from : segStart;
+    const windowEnd = to && segEnd > to ? to : segEnd;
+    if(windowEnd < windowStart) continue;
+    const segDur = daysBetween(segStart, segEnd) + 1;
+    const overlapDur = daysBetween(windowStart, windowEnd) + 1;
+    const baseVal = (seg.value !== undefined && !Number.isNaN(seg.value)) ? Number(seg.value) : 0;
+    const prorated = segDur > 0 ? baseVal * (overlapDur / segDur) : baseVal;
+    totalCustom += prorated;
   }
+
+  function overlapValueForInterval(interval){
+    const intStart = parseDate(interval.start);
+    const intEnd = parseDate(interval.end);
+    let sum = 0;
+    for(const seg of customSegments){
+      const segStart = parseDate(seg.rawStart || seg.start);
+      const segEnd = parseDate(seg.rawEnd || seg.end);
+      if(!segStart || !segEnd || Number.isNaN(segStart) || Number.isNaN(segEnd)) continue;
+      const oStart = segStart > intStart ? segStart : intStart;
+      const oEnd = segEnd < intEnd ? segEnd : intEnd;
+      if(oEnd < oStart) continue;
+      const segDur = daysBetween(segStart, segEnd) + 1;
+      const overlapDur = daysBetween(oStart, oEnd) + 1;
+      const baseVal = (seg.value !== undefined && !Number.isNaN(seg.value)) ? Number(seg.value) : 0;
+      const prorated = segDur > 0 ? baseVal * (overlapDur / segDur) : baseVal;
+      sum += prorated;
+    }
+    return sum;
+  }
+
+  // Build one segment per split interval with value = totalCustom * share
+  const result = [];
+  distIntervals.forEach(interval=>{
+    let segVal;
+    if(interval.included){
+      segVal = Math.round(totalCustom * (interval.share || 0));
+    }else{
+      segVal = Math.round(overlapValueForInterval(interval));
+    }
+    result.push({
+      start: interval.start,
+      end: interval.end,
+      rawStart: interval.rawStart,
+      rawEnd: interval.rawEnd,
+      value: segVal
+    });
+  });
   return result;
 }
 
